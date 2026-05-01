@@ -1,0 +1,14 @@
+# WisprWin for Windows — Python Dependencies
+# Install with: pip install -r requirements.txt
+# For CUDA (RTX GPU): torch is installed separately in setup.bat first
+
+faster-whisper
+sounddevice
+numpy
+keyboard
+pyperclip
+pyautogui
+pystray
+Pillow
+pywin32
+customtkinter
