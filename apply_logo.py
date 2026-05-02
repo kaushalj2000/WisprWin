@@ -15,15 +15,15 @@ def pad_to_square(img):
     return square_img
 
 try:
-    # 1. Desktop Icon (App_logo.png -> icon.ico)
-    if os.path.exists(app_logo_path):
-        app_img = Image.open(app_logo_path).convert("RGBA")
+    # 1. Desktop Icon (logo.png -> icon.ico)
+    if os.path.exists(logo_path):
+        app_img = Image.open(logo_path).convert("RGBA")
         app_square = pad_to_square(app_img)
         icon_sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
         app_square.save(os.path.join(assets_dir, "icon.ico"), format="ICO", sizes=icon_sizes)
-        print("SUCCESS: Generated desktop icon.ico from App_logo.png")
+        print("SUCCESS: Generated desktop icon.ico from logo.png")
     else:
-        print(f"WARNING: {app_logo_path} not found.")
+        print(f"WARNING: {logo_path} not found.")
 
     # 2. Tray Icons and Sidebar UI (logo.png -> PNGs)
     if os.path.exists(logo_path):

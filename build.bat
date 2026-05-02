@@ -37,7 +37,7 @@ if errorlevel 1 (
 :: Generate icons (including .ico)
 echo.
 echo [2/3] Generating icons ...
-python wisprwin\make_icons.py
+python apply_logo.py
 
 :: Build
 echo.
