@@ -147,7 +147,7 @@ def get_downloaded_models() -> list[str]:
         "small":            "Systran/faster-whisper-small",
         "medium":           "Systran/faster-whisper-medium",
         "large-v3":         "Systran/faster-whisper-large-v3",
-        "large-v3-turbo":   "Systran/faster-whisper-large-v3-turbo",
+        "large-v3-turbo":   "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         "distil-large-v2":  "Systran/faster-distil-whisper-large-v2",
         "distil-large-v3":  "Systran/faster-distil-whisper-large-v3",
     }
@@ -178,7 +178,7 @@ def delete_model(model_name: str) -> bool:
         "small":            "Systran/faster-whisper-small",
         "medium":           "Systran/faster-whisper-medium",
         "large-v3":         "Systran/faster-whisper-large-v3",
-        "large-v3-turbo":   "Systran/faster-whisper-large-v3-turbo",
+        "large-v3-turbo":   "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         "distil-large-v2":  "Systran/faster-distil-whisper-large-v2",
         "distil-large-v3":  "Systran/faster-distil-whisper-large-v3",
     }

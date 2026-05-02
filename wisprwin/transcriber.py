@@ -65,10 +65,12 @@ class Transcriber:
         lang = None if self._language == "auto" else self._language
 
         with self._lock:
+            print(f"[transcriber] Transcribing with model={self._model_name}, language={lang}")
             # faster-whisper returns a generator of segments
             segments, info = self._model.transcribe(
                 audio,
                 language=lang,
+                task="transcribe",
                 beam_size=5,
                 vad_filter=True, # Recommended for faster-whisper
             )
@@ -102,9 +104,10 @@ class Transcriber:
 
     def _load_model(self, model_name: str) -> None:
         """Load (or download) a Whisper model into memory."""
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if device == "cuda" else "int8"
+        import ctranslate2
+        has_cuda = ctranslate2.get_cuda_device_count() > 0
+        device = "cuda" if has_cuda else "cpu"
+        compute_type = "float16" if has_cuda else "int8"
         
         print(f"[transcriber] Loading model '{model_name}' on {device} …")
         with self._lock:
@@ -118,5 +121,5 @@ class Transcriber:
 
     def _is_cuda(self) -> bool:
         """True if the loaded model is on a CUDA device."""
-        import torch
-        return torch.cuda.is_available()
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0

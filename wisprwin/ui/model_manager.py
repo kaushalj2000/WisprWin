@@ -1,430 +1,303 @@
 """
-ui/model_manager.py — Model Manager window for WisprWin.
+ui/model_manager.py — WisprWin Model Manager.
 
-Clean card layout with explicit text labels (no cryptic icons/stars).
-Download runs in a background thread. All UI updates are posted back
-to the main thread via CTkToplevel.after(), which is safe because this
-window is created and lives on the main thread.
+All sizes are ACTUAL PIXELS (set_widget_scaling=1.0 in main.py).
+Cards use a flat single-padding layout — no nested row frames.
 """
 
 import threading
 from typing import Callable, TYPE_CHECKING
 
 import customtkinter as ctk
-
 import settings as cfg_mod
 
 if TYPE_CHECKING:
     from main import WisprApp
 
-# ── palette ──────────────────────────────────────────────────────────────────
-BG           = "#0F0F1A"
-SURFACE      = "#1A1A2E"
-SURFACE_2    = "#16213E"
-ACCENT       = "#7C3AED"
-ACCENT_HV    = "#6D28D9"
-ACCENT_LIGHT = "#A78BFA"
-TEXT         = "#E2E8F0"
-SUBTEXT      = "#94A3B8"
-BORDER       = "#2D2D4A"
-SUCCESS      = "#22C55E"
-SUCCESS_BG   = "#0D2818"
-RED          = "#EF4444"
-RED_BG       = "#2D0A0A"
-AMBER        = "#F59E0B"
-AMBER_BG     = "#2D1A00"
-HIGHLIGHT_BG = "#1E1B4B"
+# ══════════════════════════════════════════════════════════════════════════════
+BG       = "#1C1C1E"
+CARD     = "#2C2C2E"
+CARD_HV  = "#363638"
+INPUT    = "#242426"
+HEADER   = "#242428"
 
-# Speed / accuracy text labels (stars → words)
-_SPEED_LABELS    = {5: "Very Fast", 4: "Fast", 3: "Medium", 2: "Slow",  1: "Very Slow"}
-_ACCURACY_LABELS = {5: "Excellent", 4: "Very Good", 3: "Good",  2: "Fair", 1: "Basic"}
-_SPEED_COLORS    = {5: SUCCESS, 4: SUCCESS, 3: AMBER, 2: RED, 1: RED}
-_ACCURACY_COLORS = {5: SUCCESS, 4: SUCCESS, 3: AMBER, 2: RED, 1: RED}
+ACC      = "#60A5FA"
+ACC_HV   = "#3B82F6"
+ACC_SOFT = "#1E3A5F"
+ACC_TXT  = "#93C5FD"
 
-# ── model catalog ────────────────────────────────────────────────────────────
-# speed/accuracy are integers 1-5 mapped to text labels above.
-# languages_count: actual number or "English only".
-MODEL_CATALOG = [
-    {
-        "name": "tiny",
-        "size": "75 MB",
-        "speed": 5,
-        "accuracy": 2,
-        "languages": "99 languages",
-        "best_for": "Quick notes, weak or old hardware",
-    },
-    {
-        "name": "base",
-        "size": "145 MB",
-        "speed": 4,
-        "accuracy": 3,
-        "languages": "99 languages",
-        "best_for": "Good starting point for most users",
-    },
-    {
-        "name": "small",
-        "size": "465 MB",
-        "speed": 4,
-        "accuracy": 4,
-        "languages": "99 languages",
-        "best_for": "Best balance of speed and accuracy",
-    },
-    {
-        "name": "medium",
-        "size": "1.5 GB",
-        "speed": 3,
-        "accuracy": 4,
-        "languages": "99 languages",
-        "best_for": "Higher accuracy at moderate speed",
-    },
-    {
-        "name": "large-v3",
-        "size": "3 GB",
-        "speed": 2,
-        "accuracy": 5,
-        "languages": "99 languages",
-        "best_for": "Maximum accuracy — slow on CPU, needs GPU",
-    },
-    {
-        "name": "large-v3-turbo",
-        "size": "800 MB",
-        "speed": 4,
-        "accuracy": 5,
-        "languages": "99 languages",
-        "best_for": "Best overall choice — highly recommended",
-        "recommended": True,
-    },
-    {
-        "name": "distil-large-v2",
-        "size": "750 MB",
-        "speed": 5,
-        "accuracy": 4,
-        "languages": "English only",
-        "best_for": "Fast and accurate — English speakers only",
-    },
-    {
-        "name": "distil-large-v3",
-        "size": "750 MB",
-        "speed": 5,
-        "accuracy": 5,
-        "languages": "English only",
-        "best_for": "Best English-only model available",
-    },
+TXT      = "#F5F5F7"
+TXT2     = "#A1A1AA"
+TXT3     = "#71717A"
+
+BRD      = "#3A3A3C"
+BRD_LT   = "#52525B"
+
+GREEN    = "#34D399"
+GREEN_HV = "#22C55E"
+GREEN_BG = "#14291E"
+RED      = "#F87171"
+RED_BG   = "#291414"
+AMBER    = "#FBBF24"
+AMBER_HV = "#F59E0B"
+AMBER_BG = "#292211"
+
+ACTIVE_BG = "#1A2744"
+
+FONT = "Segoe UI"
+# ══════════════════════════════════════════════════════════════════════════════
+
+def F(sz: int, b: bool = False) -> ctk.CTkFont:
+    return ctk.CTkFont(family=FONT, size=sz, weight="bold" if b else "normal")
+
+_SPD = {5:"Very Fast",4:"Fast",3:"Medium",2:"Slow",1:"Very Slow"}
+_ACC = {5:"Excellent",4:"Very Good",3:"Good",2:"Fair",1:"Basic"}
+_SC  = {5:GREEN,4:GREEN,3:AMBER,2:RED,1:RED}
+
+MODELS = [
+    {"name":"tiny","size":"75 MB","speed":5,"accuracy":2,
+     "lang":"99 languages","desc":"Quick notes, weak hardware"},
+    {"name":"base","size":"145 MB","speed":4,"accuracy":3,
+     "lang":"99 languages","desc":"Good starting point"},
+    {"name":"small","size":"465 MB","speed":4,"accuracy":4,
+     "lang":"99 languages","desc":"Best balance of speed & accuracy"},
+    {"name":"medium","size":"1.5 GB","speed":3,"accuracy":4,
+     "lang":"99 languages","desc":"Higher accuracy, moderate speed"},
+    {"name":"large-v3","size":"3 GB","speed":2,"accuracy":5,
+     "lang":"99 languages","desc":"Maximum accuracy — needs GPU"},
+    {"name":"large-v3-turbo","size":"800 MB","speed":4,"accuracy":5,
+     "lang":"99 languages","desc":"Best overall — highly recommended",
+     "rec":True},
+    {"name":"distil-large-v2","size":"750 MB","speed":5,"accuracy":4,
+     "lang":"English only","desc":"Fast & accurate — English only"},
+    {"name":"distil-large-v3","size":"750 MB","speed":5,"accuracy":5,
+     "lang":"English only","desc":"Best English-only model"},
 ]
 
 
 class ModelManagerWindow:
-    """Model Manager as a CTkToplevel (lives on the main thread — no threading issues)."""
-
-    def __init__(
-        self,
-        parent: ctk.CTk,
-        app: "WisprApp",
-        on_model_changed: Callable[[str], None],
-    ) -> None:
+    def __init__(self, parent, app: "WisprApp",
+                 on_model_changed: Callable[[str], None]) -> None:
         self._app = app
-        self._on_model_changed = on_model_changed
-        self._downloading: set[str] = set()
-        self._card_refs: dict[str, dict] = {}
+        self._cb = on_model_changed
+        self._dling: set[str] = set()
+        self._refs: dict = {}
 
-        self._win = ctk.CTkToplevel(parent)
-        self._win.title("WisprWin · Model Manager")
-        self._win.configure(fg_color=BG)
-        self._win.resizable(True, True)
-        self._win.minsize(680, 500)
+        self._w = ctk.CTkToplevel(parent)
+        self._w.title("WisprWin · Models")
+        self._w.configure(fg_color=BG)
+        self._w.resizable(True, True)
+        self._w.minsize(700, 500)
+        sw = self._w.winfo_screenwidth()
+        sh = self._w.winfo_screenheight()
+        w, h = 780, int(sh * 0.80)
+        self._w.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self._w.attributes("-topmost", True)
+        self._build()
 
-        w, h = 720, 700
-        x = (self._win.winfo_screenwidth()  - w) // 2
-        y = (self._win.winfo_screenheight() - h) // 2
-        self._win.geometry(f"{w}x{h}+{x}+{y}")
-        self._win.attributes("-topmost", True)
+    def focus(self):
+        self._w.lift(); self._w.focus_force()
 
-        self._build_ui()
+    # ── Build ─────────────────────────────────────────────────────────────────
 
-    def focus(self) -> None:
-        self._win.lift()
-        self._win.focus_force()
+    def _build(self):
+        hdr = ctk.CTkFrame(self._w, fg_color=HEADER, corner_radius=0, height=60)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        hi = ctk.CTkFrame(hdr, fg_color="transparent")
+        hi.pack(fill="x", padx=28, expand=True)
+        ctk.CTkLabel(hi, text="Model Manager", font=F(22, True), text_color=TXT).pack(side="left")
+        ctk.CTkLabel(hi, text="Download & manage Whisper models",
+                     font=F(13), text_color=TXT3).pack(side="left", padx=(14,0))
 
-    def destroy(self) -> None:
-        try:
-            self._win.destroy()
-        except Exception:
-            pass
+        self._sc = ctk.CTkScrollableFrame(self._w, fg_color=BG,
+                                          scrollbar_button_color=BRD,
+                                          scrollbar_button_hover_color=BRD_LT)
+        self._sc.pack(fill="both", expand=True, padx=8, pady=8)
+        self._pop()
 
-    # ── Build UI ─────────────────────────────────────────────────────────────
+    def _pop(self):
+        for w in self._sc.winfo_children(): w.destroy()
+        self._refs.clear()
+        dl = set(cfg_mod.get_downloaded_models())
+        act = self._app.config.get("model", "base")
 
-    def _build_ui(self) -> None:
-        # Header
-        hdr = ctk.CTkFrame(self._win, fg_color=SURFACE, corner_radius=0, height=90)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        hdr_inner = ctk.CTkFrame(hdr, fg_color="transparent")
-        hdr_inner.pack(fill="x", padx=28, pady=14)
-        ctk.CTkLabel(hdr_inner, text="Model Manager",
-                     font=ctk.CTkFont("Segoe UI", 22, "bold"),
-                     text_color=TEXT).pack(anchor="w")
-        ctk.CTkLabel(hdr_inner,
-                     text="Download Whisper models · Each model is stored locally on your PC",
-                     font=ctk.CTkFont("Segoe UI", 12), text_color=SUBTEXT
-                     ).pack(anchor="w", pady=(2, 0))
+        if not dl:
+            self._empty()
 
-        # Column header row
-        col_hdr = ctk.CTkFrame(self._win, fg_color="transparent", height=28)
-        col_hdr.pack(fill="x", padx=28, pady=(8, 0))
-        col_hdr.pack_propagate(False)
-        for txt, anchor, side in [
-            ("Model", "w", "left"),
-            ("File Size", "w", "left"),
-            ("Speed", "w", "left"),
-            ("Accuracy", "w", "left"),
-            ("Languages", "w", "left"),
-        ]:
-            ctk.CTkLabel(col_hdr, text=txt,
-                         font=ctk.CTkFont("Segoe UI", 10, "bold"),
-                         text_color=SUBTEXT, width=90
-                         ).pack(side=side, padx=(0, 4))
+        for m in MODELS:
+            n = m["name"]
+            self._card(m, n in dl, n == act, m.get("rec", False))
 
-        # Scrollable list
-        self._scroll = ctk.CTkScrollableFrame(
-            self._win, fg_color=BG,
-            scrollbar_button_color=BORDER,
-            scrollbar_button_hover_color=ACCENT,
-        )
-        self._scroll.pack(fill="both", expand=True, padx=12, pady=8)
+    # ── Empty state ───────────────────────────────────────────────────────────
 
-        self._populate_cards()
+    def _empty(self):
+        b = ctk.CTkFrame(self._sc, fg_color=CARD, corner_radius=10,
+                         border_width=1, border_color=ACC)
+        b.pack(fill="x", padx=16, pady=(4,16))
+        ctk.CTkLabel(b, text="No models downloaded", font=F(16, True),
+                     text_color=TXT).pack(pady=(20,4))
+        ctk.CTkLabel(b, text="Pick a model below and click Download. The RECOMMENDED model is a great starting point.",
+                     font=F(14), text_color=TXT2, wraplength=550,
+                     justify="center").pack(padx=20, pady=(0,20))
 
-    def _populate_cards(self) -> None:
-        """Build all cards based on current downloaded/active state."""
-        for child in self._scroll.winfo_children():
-            child.destroy()
-        self._card_refs.clear()
+    # ── Card — FLAT layout, no nested row frames ─────────────────────────────
 
-        downloaded   = set(cfg_mod.get_downloaded_models())
-        active_model = self._app.config.get("model", "base")
+    def _card(self, m, is_dl, is_act, is_rec):
+        name = m["name"]
 
-        for info in MODEL_CATALOG:
-            name        = info["name"]
-            is_dl       = name in downloaded
-            is_active   = name == active_model
-            is_rec      = info.get("recommended", False)
-            self._build_card(info, is_downloaded=is_dl, is_active=is_active, is_recommended=is_rec)
+        if is_act:
+            bg, bc = ACTIVE_BG, ACC
+        elif is_rec:
+            bg, bc = CARD, AMBER
+        else:
+            bg, bc = CARD, BRD
 
-    def _build_card(self, info: dict, is_downloaded: bool, is_active: bool, is_recommended: bool) -> None:
-        name = info["name"]
-        speed_n    = info["speed"]
-        acc_n      = info["accuracy"]
-        speed_txt  = _SPEED_LABELS[speed_n]
-        acc_txt    = _ACCURACY_LABELS[acc_n]
-        speed_col  = _SPEED_COLORS[speed_n]
-        acc_col    = _ACCURACY_COLORS[acc_n]
-        lang_col   = AMBER if info["languages"] == "English only" else TEXT
+        c = ctk.CTkFrame(self._sc, fg_color=bg, corner_radius=10,
+                         border_width=1, border_color=bc)
+        c.pack(fill="x", padx=16, pady=(0,6))
 
-        card_bg     = HIGHLIGHT_BG if is_active else SURFACE
-        border_col  = ACCENT       if is_active else (ACCENT_LIGHT if is_recommended else BORDER)
-        border_w    = 2            if is_active else 1
+        # Use grid for pixel-perfect control — no frame nesting
+        c.grid_columnconfigure(0, weight=1)  # left side expands
+        c.grid_columnconfigure(1, weight=0)  # right side fixed
 
-        card = ctk.CTkFrame(self._scroll, fg_color=card_bg, corner_radius=12,
-                            border_width=border_w, border_color=border_col)
-        card.pack(fill="x", pady=5, padx=4)
+        # Row 0: Name + badges | Action buttons
+        name_f = ctk.CTkFrame(c, fg_color="transparent")
+        name_f.grid(row=0, column=0, sticky="w", padx=16, pady=(12,0))
 
-        # ── Row 1: Name + badges + action button ──────────────────────────
-        row1 = ctk.CTkFrame(card, fg_color="transparent")
-        row1.pack(fill="x", padx=16, pady=(12, 0))
-
-        # Left: name + badges
-        left = ctk.CTkFrame(row1, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(left, text=name,
-                     font=ctk.CTkFont("Segoe UI", 15, "bold"),
-                     text_color=TEXT).pack(side="left")
-
-        if is_recommended:
-            ctk.CTkLabel(left, text="  RECOMMENDED  ",
-                         font=ctk.CTkFont("Segoe UI", 9, "bold"),
+        ctk.CTkLabel(name_f, text=name, font=F(15, True), text_color=TXT).pack(side="left")
+        if is_rec:
+            ctk.CTkLabel(name_f, text=" REC ", font=F(10, True),
                          text_color=AMBER, fg_color=AMBER_BG,
-                         corner_radius=6).pack(side="left", padx=(10, 0))
+                         corner_radius=6).pack(side="left", padx=(8,0))
+        if is_act:
+            ctk.CTkLabel(name_f, text=" ACTIVE ", font=F(10, True),
+                         text_color=GREEN, fg_color=GREEN_BG,
+                         corner_radius=6).pack(side="left", padx=(6,0))
 
-        if is_active:
-            ctk.CTkLabel(left, text="  ACTIVE  ",
-                         font=ctk.CTkFont("Segoe UI", 9, "bold"),
-                         text_color=SUCCESS, fg_color=SUCCESS_BG,
-                         corner_radius=6).pack(side="left", padx=(8, 0))
+        af = ctk.CTkFrame(c, fg_color="transparent")
+        af.grid(row=0, column=1, sticky="e", padx=16, pady=(12,0))
+        self._act(af, name, is_dl, is_act)
 
-        # Right: action area (holds button or progress)
-        action_f = ctk.CTkFrame(row1, fg_color="transparent")
-        action_f.pack(side="right")
-        self._render_action(action_f, name, is_downloaded, is_active)
+        # Row 1: Chips — directly in card, no wrapper frame
+        chips = ctk.CTkFrame(c, fg_color="transparent")
+        chips.grid(row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(6,0))
 
-        # ── Row 2: Metadata chips ─────────────────────────────────────────
-        row2 = ctk.CTkFrame(card, fg_color="transparent")
-        row2.pack(fill="x", padx=16, pady=(8, 0))
+        lc = AMBER if "English" in m["lang"] else TXT2
+        for lb, v, co in [("Size",m["size"],TXT2),
+                          ("Speed",_SPD[m["speed"]],_SC[m["speed"]]),
+                          ("Accuracy",_ACC[m["accuracy"]],_SC[m["accuracy"]]),
+                          ("Lang",m["lang"],lc)]:
+            ch = ctk.CTkFrame(chips, fg_color=INPUT, corner_radius=6)
+            ch.pack(side="left", padx=(0,6))
+            ctk.CTkLabel(ch, text=f"{lb}:", font=F(12), text_color=TXT3
+                         ).pack(side="left", padx=(8,2), pady=4)
+            ctk.CTkLabel(ch, text=v, font=F(12, True), text_color=co
+                         ).pack(side="left", padx=(0,8), pady=4)
 
-        self._chip(row2, "File Size",  info["size"],  TEXT)
-        self._chip(row2, "Speed",      speed_txt,     speed_col)
-        self._chip(row2, "Accuracy",   acc_txt,       acc_col)
-        self._chip(row2, "Languages",  info["languages"], lang_col)
+        # Row 2: Description
+        ctk.CTkLabel(c, text=m["desc"], font=F(13), text_color=TXT3
+                     ).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(4,12))
 
-        # ── Row 3: Description ────────────────────────────────────────────
-        row3 = ctk.CTkFrame(card, fg_color="transparent")
-        row3.pack(fill="x", padx=16, pady=(4, 12))
-        ctk.CTkLabel(row3, text=info["best_for"],
-                     font=ctk.CTkFont("Segoe UI", 12), text_color=SUBTEXT
-                     ).pack(anchor="w")
+        self._refs[name] = {"c": c, "af": af}
 
-        # Store refs for dynamic updates
-        self._card_refs[name] = {"card": card, "action_f": action_f}
+    # ── Action ────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _chip(parent, label: str, value: str, value_color: str) -> None:
-        """A small label+value pair."""
-        f = ctk.CTkFrame(parent, fg_color=SURFACE_2, corner_radius=6)
-        f.pack(side="left", padx=(0, 8), pady=2)
-        ctk.CTkLabel(f, text=label + ": ",
-                     font=ctk.CTkFont("Segoe UI", 11),
-                     text_color=SUBTEXT).pack(side="left", padx=(8, 0), pady=4)
-        ctk.CTkLabel(f, text=value,
-                     font=ctk.CTkFont("Segoe UI", 11, "bold"),
-                     text_color=value_color).pack(side="left", padx=(0, 8), pady=4)
+    def _act(self, p, name, is_dl, is_act):
+        for w in p.winfo_children(): w.destroy()
 
-    def _render_action(self, parent: ctk.CTkFrame, name: str,
-                       is_downloaded: bool, is_active: bool) -> None:
-        """Render the correct button(s) in the action area."""
-        for child in parent.winfo_children():
-            child.destroy()
-
-        if name in self._downloading:
-            # Progress indicator
-            prog = ctk.CTkProgressBar(parent, width=140, height=12,
-                                       fg_color=BORDER, progress_color=ACCENT,
-                                       corner_radius=6, mode="indeterminate")
-            prog.pack(side="left", padx=(0, 8))
-            prog.start()
-            ctk.CTkLabel(parent, text="Downloading…",
-                         font=ctk.CTkFont("Segoe UI", 11),
-                         text_color=ACCENT_LIGHT).pack(side="left")
+        if name in self._dling:
+            bar = ctk.CTkProgressBar(p, width=120, height=8,
+                                     fg_color=BRD, progress_color=ACC,
+                                     corner_radius=4, mode="indeterminate")
+            bar.pack(side="left", padx=(0,8)); bar.start()
+            ctk.CTkLabel(p, text="Downloading…", font=F(12), text_color=ACC_TXT).pack(side="left")
             return
 
-        if is_active:
-            # No button needed — badge already shown on name row
+        if is_act:
             return
 
-        if is_downloaded:
-            ctk.CTkButton(parent, text="Set as Active",
-                          font=ctk.CTkFont("Segoe UI", 12, "bold"),
-                          fg_color=SUCCESS, hover_color="#16A34A",
-                          text_color="#FFFFFF",
-                          corner_radius=8, height=32, width=120,
-                          command=lambda n=name: self._set_active(n)
-                          ).pack(side="left", padx=(0, 6))
-            ctk.CTkButton(parent, text="Delete",
-                          font=ctk.CTkFont("Segoe UI", 11),
-                          fg_color=SURFACE_2, hover_color=RED,
-                          text_color=SUBTEXT,
-                          corner_radius=8, height=32, width=70,
-                          command=lambda n=name: self._delete_model(n)
-                          ).pack(side="left")
+        if is_dl:
+            ctk.CTkButton(p, text="Set Active", font=F(13, True),
+                          fg_color=GREEN_HV, hover_color=GREEN, text_color="#FFF",
+                          corner_radius=8, height=34, width=100,
+                          command=lambda: self._set(name)).pack(side="left", padx=(0,6))
+            ctk.CTkButton(p, text="Delete", font=F(12),
+                          fg_color="transparent", hover_color=RED_BG,
+                          border_width=1, border_color=RED, text_color=RED,
+                          corner_radius=8, height=34, width=72,
+                          command=lambda: self._del(name)).pack(side="left")
         else:
-            ctk.CTkButton(parent, text="Download",
-                          font=ctk.CTkFont("Segoe UI", 12, "bold"),
-                          fg_color=ACCENT, hover_color=ACCENT_HV,
-                          corner_radius=8, height=32, width=110,
-                          command=lambda n=name: self._start_download(n)
-                          ).pack(side="left")
+            ctk.CTkButton(p, text="Download", font=F(13, True),
+                          fg_color=ACC_HV, hover_color=ACC, text_color="#FFF",
+                          corner_radius=8, height=34, width=100,
+                          command=lambda: self._dl(name)).pack(side="left")
 
-    # ── Actions ──────────────────────────────────────────────────────────────
+    # ── Download ──────────────────────────────────────────────────────────────
 
-    def _start_download(self, name: str) -> None:
-        if name in self._downloading:
-            return
-        self._downloading.add(name)
+    def _dl(self, name):
+        if name in self._dling: return
+        self._dling.add(name)
+        r = self._refs.get(name)
+        if r: self._act(r["af"], name, False, False)
 
-        # Immediately refresh the action button to show progress
-        refs = self._card_refs.get(name)
-        if refs:
-            self._render_action(refs["action_f"], name, False, False)
-
-        def _do() -> None:
+        def w():
             try:
-                import torch
-                device       = "cuda" if torch.cuda.is_available() else "cpu"
-                compute_type = "float16" if device == "cuda" else "int8"
+                import ctranslate2
+                gpu = ctranslate2.get_cuda_device_count() > 0
+                d, ct = ("cuda","float16") if gpu else ("cpu","int8")
                 from faster_whisper import WhisperModel
-                m = WhisperModel(name, device=device, compute_type=compute_type,
-                                 download_root=str(cfg_mod.MODELS_DIR))
-                del m
-                self._win.after(0, lambda: self._on_download_done(name, True))
+                m = WhisperModel(name, device=d, compute_type=ct,
+                                 download_root=str(cfg_mod.MODELS_DIR)); del m
+                self._w.after(0, lambda: self._done(name, True))
             except Exception as e:
-                print(f"[model_manager] Download failed '{name}': {e}")
-                self._win.after(0, lambda err=str(e): self._on_download_done(name, False, err))
+                print(f"[mm] Download fail '{name}': {e}")
+                self._w.after(0, lambda: self._done(name, False))
 
-        threading.Thread(target=_do, daemon=True).start()
+        threading.Thread(target=w, daemon=True).start()
 
-    def _on_download_done(self, name: str, success: bool, error: str = "") -> None:
-        self._downloading.discard(name)
-        refs = self._card_refs.get(name)
-        if not refs:
-            return
+    def _done(self, name, ok):
+        self._dling.discard(name)
+        if ok: self._pop(); return
+        r = self._refs.get(name)
+        if not r: return
+        af = r["af"]
+        for w in af.winfo_children(): w.destroy()
+        ctk.CTkLabel(af, text="Failed", font=F(12), text_color=RED).pack(side="left", padx=(0,8))
+        ctk.CTkButton(af, text="Retry", font=F(12, True),
+                      fg_color=AMBER, hover_color=AMBER_HV, text_color="#000",
+                      corner_radius=8, height=30, width=66,
+                      command=lambda: self._dl(name)).pack(side="left")
 
-        if success:
-            # Rebuild card to show Set as Active + Delete
-            self._refresh_cards()
-        else:
-            # Show retry in action area
-            af = refs["action_f"]
-            for ch in af.winfo_children():
-                ch.destroy()
-            ctk.CTkLabel(af, text="Download failed",
-                         font=ctk.CTkFont("Segoe UI", 11),
-                         text_color=RED).pack(side="left", padx=(0, 8))
-            ctk.CTkButton(af, text="Retry",
-                          font=ctk.CTkFont("Segoe UI", 11),
-                          fg_color=AMBER, hover_color="#D97706",
-                          text_color="#000000",
-                          corner_radius=8, height=30, width=70,
-                          command=lambda: self._start_download(name)
-                          ).pack(side="left")
-
-    def _set_active(self, name: str) -> None:
+    def _set(self, name):
         self._app.config["model"] = name
         cfg_mod.save_config(self._app.config)
-        self._on_model_changed(name)
-        self._refresh_cards()
+        self._cb(name); self._pop()
 
-    def _delete_model(self, name: str) -> None:
+    def _del(self, name):
         if name == self._app.config.get("model"):
-            self._warn_dialog(
-                "Cannot delete the active model.\nPlease set another model as active first."
-            )
+            self._warn("Cannot delete the active model.\nSet another as active first.")
             return
+        if cfg_mod.delete_model(name): self._pop()
+        else: self._warn(f"Could not delete '{name}'.\nFile may be in use.")
 
-        ok = cfg_mod.delete_model(name)
-        if ok:
-            self._refresh_cards()
-        else:
-            self._warn_dialog(f"Could not delete model '{name}'.\nCheck if the file is in use.")
+    # ── Warn ──────────────────────────────────────────────────────────────────
 
-    def _refresh_cards(self) -> None:
-        """Rebuild all cards with fresh downloaded/active state."""
-        self._populate_cards()
+    def _warn(self, msg):
+        d = ctk.CTkToplevel(self._w)
+        d.title("WisprWin"); d.configure(fg_color=BG)
+        d.resizable(False, False); d.attributes("-topmost", True); d.grab_set()
+        w, h = 420, 220
+        sw, sh = d.winfo_screenwidth(), d.winfo_screenheight()
+        d.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
 
-    def _warn_dialog(self, msg: str) -> None:
-        dlg = ctk.CTkToplevel(self._win)
-        dlg.title("WisprWin")
-        dlg.configure(fg_color=SURFACE)
-        dlg.resizable(False, False)
-        dlg.attributes("-topmost", True)
-        w2, h2 = 360, 150
-        x = (dlg.winfo_screenwidth()  - w2) // 2
-        y = (dlg.winfo_screenheight() - h2) // 2
-        dlg.geometry(f"{w2}x{h2}+{x}+{y}")
-        ctk.CTkLabel(dlg, text=msg,
-                     font=ctk.CTkFont("Segoe UI", 13),
-                     text_color=AMBER, justify="center",
-                     wraplength=320).pack(pady=(24, 12))
-        ctk.CTkButton(dlg, text="OK",
-                      font=ctk.CTkFont("Segoe UI", 13),
-                      fg_color=ACCENT, hover_color=ACCENT_HV,
-                      corner_radius=8, width=80, height=34,
-                      command=dlg.destroy).pack()
+        c = ctk.CTkFrame(d, fg_color=CARD, corner_radius=12,
+                         border_width=1, border_color=AMBER)
+        c.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(c, text="⚠", font=F(24), text_color=AMBER).pack(pady=(20,8))
+        mb = ctk.CTkFrame(c, fg_color=INPUT, corner_radius=8)
+        mb.pack(fill="x", padx=16, pady=(0,12))
+        ctk.CTkLabel(mb, text=msg, font=F(14), text_color=TXT,
+                     justify="center", wraplength=350).pack(padx=14, pady=14)
+        ctk.CTkButton(c, text="Got it", font=F(14, True),
+                      fg_color=ACC_HV, hover_color=ACC, corner_radius=8,
+                      height=40, command=d.destroy).pack(fill="x", padx=16, pady=(0,16))

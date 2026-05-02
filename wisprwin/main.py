@@ -84,8 +84,10 @@ class WisprApp:
         # Thread-safe queue for tray → GUI messages
         self._tray_q: queue.Queue = queue.Queue()
 
-        # Status update callback (set by MainWindow)
+        # Status/History update callbacks (set by MainWindow)
         self._status_callback = None
+        self._history_callback = None
+        self._history = []
 
         self._img_idle       = None
         self._img_recording  = None
@@ -118,6 +120,12 @@ class WisprApp:
                     if self._status_callback:
                         try:
                             self._status_callback(msg[1])
+                        except Exception:
+                            pass
+                elif kind == "history":
+                    if self._history_callback:
+                        try:
+                            self._history_callback(msg[1])
                         except Exception:
                             pass
                 elif kind == "show":
@@ -170,6 +178,10 @@ class WisprApp:
             text = self.transcriber.transcribe(audio)
             print(f"[main] Transcribed: {text!r}")
             if text:
+                import time
+                self._history.insert(0, {"text": text, "time": time.time()})
+                self._history = self._history[:10]
+                self._tray_q.put(("history", self._history))
                 paste_text(text, restore_clipboard=self.config.get("restore_clipboard", True))
                 if self.config.get("sound_feedback") and _HAS_WINSOUND:
                     winsound.Beep(660, 80)
@@ -252,6 +264,9 @@ class WisprApp:
     def register_status_callback(self, cb) -> None:
         self._status_callback = cb
 
+    def register_history_callback(self, cb) -> None:
+        self._history_callback = cb
+
     # ── Window show/hide ──────────────────────────────────────────────────────
 
     def _do_show_window(self) -> None:
@@ -299,6 +314,7 @@ class WisprApp:
         import customtkinter as ctk
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
+        ctk.set_widget_scaling(1.0)  # prevent CTk from double-scaling on high-DPI
 
         self._root = ctk.CTk()
         self._root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
@@ -342,7 +358,15 @@ class WisprApp:
                 self._model_loading = False
                 self._set_icon("idle")
 
-        threading.Thread(target=_load_model, daemon=True).start()
+        downloaded_models = cfg_mod.get_downloaded_models()
+        if not downloaded_models:
+            print("[main] No models found. Prompting user to download.")
+            # Force Model Manager to open on startup
+            self._root.after(500, self._main_win._open_model_manager)
+            self._set_icon("idle")
+        else:
+            threading.Thread(target=_load_model, daemon=True).start()
+
 
         # ── Register hotkey ───────────────────────────────────────────────
         self._register_hotkey(self.config.get("hotkey", "right alt+."))
