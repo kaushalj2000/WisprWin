@@ -12,3 +12,5 @@ pystray
 Pillow
 pywin32
 customtkinter
+PyAudioWPatch
+scipy

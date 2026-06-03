@@ -48,6 +48,7 @@ pyinstaller ^
     --icon=wisprwin\assets\icon.ico ^
     --name=WisprWin ^
     --add-data "wisprwin\assets;assets" ^
+    --collect-data faster_whisper ^
     wisprwin\main.py
 
 echo.

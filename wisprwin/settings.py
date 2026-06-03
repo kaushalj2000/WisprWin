@@ -26,6 +26,8 @@ DEFAULT_CONFIG = {
     "sound_feedback": True,
     "restore_clipboard": True,
     "launch_at_startup": False,
+    "system_audio_hotkey": "right alt+/",
+    "system_audio_chunk_seconds": 30,
 }
 
 

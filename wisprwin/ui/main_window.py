@@ -45,6 +45,20 @@ LANGUAGES = {
 }
 INV_LANG = {v: k for k, v in LANGUAGES.items()}
 
+DICTATION_HOTKEY_OPTIONS = [
+    ("Default (Right Alt + .)", "right alt+."),
+    ("Right Alt + Space", "right alt+space"),
+    ("Right Alt + Enter", "right alt+enter"),
+    ("Right Ctrl + Space", "right ctrl+space"),
+    ("Ctrl + Shift + Space", "ctrl+shift+space"),
+    ("Alt + Shift + D", "alt+shift+d"),
+]
+HOTKEY_LABEL_BY_VALUE = {value: label for label, value in DICTATION_HOTKEY_OPTIONS}
+HOTKEY_VALUE_BY_LABEL = {label: value for label, value in DICTATION_HOTKEY_OPTIONS}
+
+def _normalize_hotkey(value: str) -> str:
+    return "+".join(part.strip().lower() for part in value.split("+") if part.strip())
+
 # Models Data
 MODELS = [
     {"name":"tiny", "repo":"openai/whisper-tiny", "size":"75 MB", "vram":"~1GB VRAM", "speed":"⚡ Very Fast", "acc":"🎯 Basic", "lang":"🌍 Multilingual", "desc":"Fastest model. Good for quick notes but struggles with heavy accents.", "rec":False},
@@ -86,21 +100,31 @@ class MainWindow:
         
         # State
         self._dling: set[str] = set()
+        self._dl_start_times: dict[str, float] = {}
         self._model_refs: dict = {}
         self._pulse_id = None
         self.cfg = self.app.config.copy()
         
         # UI Elements
-        self._var_hotkey = ctk.StringVar(value=self.cfg.get("hotkey", "right alt + ."))
+        hotkey_value = _normalize_hotkey(self.cfg.get("hotkey", "right alt+."))
+        hotkey_label = HOTKEY_LABEL_BY_VALUE.get(hotkey_value, DICTATION_HOTKEY_OPTIONS[0][0])
+        self._var_hotkey = ctk.StringVar(value=hotkey_label)
+        self._var_sys_hotkey = ctk.StringVar(value=self.cfg.get("system_audio_hotkey", "right alt+/"))
         self._var_lang = ctk.StringVar(value=INV_LANG.get(self.cfg.get("language", "auto"), "Auto Detect"))
         
         self._var_sound = ctk.BooleanVar(value=self.cfg.get("sound_feedback", True))
         self._var_startup = ctk.BooleanVar(value=self.cfg.get("launch_at_startup", False))
         self._var_clipboard = ctk.BooleanVar(value=self.cfg.get("restore_clipboard", True))
 
+        # System audio UI state
+        self._sys_pulse_id = None
+        self._sys_timer_id = None
+        self._sys_recording_start = 0.0
+
         self._build_sidebar()
         self._build_home_view()
         self._build_models_view()
+        self._build_system_audio_view()
         self._build_settings_view()
         
         self.select_view("home")
@@ -108,20 +132,68 @@ class MainWindow:
         # Callbacks
         self.app.register_status_callback(self._on_status)
         self.app.register_history_callback(self._on_history)
+        self.app.register_system_status_callback(self._on_system_status)
+        self.app.register_system_transcript_callback(self._on_system_transcript)
         
-        self._var_hotkey.trace_add("write", self._save)
+        self._var_sys_hotkey.trace_add("write", self._save)
         self._var_lang.trace_add("write", self._save)
         self._var_sound.trace_add("write", self._save)
         self._var_startup.trace_add("write", self._save)
         self._var_clipboard.trace_add("write", self._save)
 
     def _save(self, *args):
-        self.cfg["hotkey"] = self._var_hotkey.get()
+        self.cfg["hotkey"] = self.cfg.get("hotkey", "right alt+.")
+        self.cfg["system_audio_hotkey"] = self._var_sys_hotkey.get()
         self.cfg["language"] = LANGUAGES.get(self._var_lang.get(), "auto")
         self.cfg["sound_feedback"] = self._var_sound.get()
         self.cfg["launch_at_startup"] = self._var_startup.get()
         self.cfg["restore_clipboard"] = self._var_clipboard.get()
-        self.app.apply_settings(self.cfg)
+        self.app.apply_settings(self.cfg.copy())
+
+    def _save_dictation_hotkey(self):
+        self.cfg["hotkey"] = HOTKEY_VALUE_BY_LABEL.get(
+            self._var_hotkey.get(),
+            DICTATION_HOTKEY_OPTIONS[0][1],
+        )
+        self.app.apply_settings(self.cfg.copy())
+        self._show_saved_popup("Shortcut saved", "Dictation shortcut setting has been saved.")
+
+    def _show_saved_popup(self, title: str, message: str):
+        try:
+            pop = ctk.CTkToplevel(self.root)
+            pop.title(title)
+            pop.geometry("340x140")
+            pop.resizable(False, False)
+            pop.configure(fg_color=CARD_BG)
+            pop.transient(self.root)
+            pop.lift()
+            pop.attributes("-topmost", True)
+            pop.after(250, lambda: pop.attributes("-topmost", False))
+
+            self.root.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 170
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 70
+            pop.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+            body = ctk.CTkFrame(pop, fg_color=CARD_BG, corner_radius=12)
+            body.pack(fill="both", expand=True, padx=20, pady=18)
+            ctk.CTkLabel(body, text=title, font=F(16, True), text_color=TEXT).pack(anchor="w", pady=(4, 6))
+            ctk.CTkLabel(body, text=message, font=F(13), text_color=TEXT_MUTED, wraplength=280, justify="left").pack(anchor="w")
+            ctk.CTkButton(
+                body,
+                text="OK",
+                font=F(13, True),
+                width=72,
+                height=30,
+                corner_radius=8,
+                fg_color=ACCENT,
+                hover_color=ACCENT_HOVER,
+                text_color="#FFFFFF",
+                command=pop.destroy,
+            ).pack(anchor="e", pady=(16, 0))
+            pop.after(1800, pop.destroy)
+        except Exception as e:
+            print(f"[ui] save popup failed: {e}")
 
     # ── Sidebar ─────────────────────────────────────────────────────────────
     def _build_sidebar(self):
@@ -147,6 +219,7 @@ class MainWindow:
         self.nav_btns = {}
         self.nav_btns["home"] = self._nav_button(sidebar, "Dashboard", "home", "📊")
         self.nav_btns["models"] = self._nav_button(sidebar, "Model Catalog", "models", "🧠")
+        self.nav_btns["system_audio"] = self._nav_button(sidebar, "System Audio", "system_audio", "🎧")
         self.nav_btns["settings"] = self._nav_button(sidebar, "Preferences", "settings", "⚙️")
 
         status_fr = ctk.CTkFrame(sidebar, fg_color=CARD_BG, corner_radius=16, border_width=1, border_color=BORDER)
@@ -179,7 +252,8 @@ class MainWindow:
 
     # ── Status ───────────────────────────────────────────────────────────────
     def _on_status(self, state: str):
-        cmap = {"idle": (GREEN, "Ready to dictate"), "recording": (RED, "Recording..."), "processing": (ACCENT, "Processing...")}
+        cmap = {"idle": (GREEN, "Ready to dictate"), "recording": (RED, "Recording..."),
+                "processing": (ACCENT, "Processing..."), "error": (RED, "Audio error — check mic")}
         c, t = cmap.get(state, cmap["idle"])
         try:
             self._lbl_status_dot.configure(text_color=c)
@@ -189,7 +263,7 @@ class MainWindow:
             try: self.root.after_cancel(self._pulse_id)
             except: pass
             self._pulse_id = None
-        if state == "recording":
+        if state == "recording" or state == "error":
             self._do_pulse(True)
 
     def _do_pulse(self, vis: bool):
@@ -239,8 +313,116 @@ class MainWindow:
         ctk.CTkLabel(config_col, text="Quick Settings", font=F(18, True), text_color=TEXT).pack(anchor="w", pady=(0, 16))
         
         hk_card = self._settings_card(config_col)
-        ctk.CTkLabel(hk_card, text="Dictation Shortcut", font=F(15, True), text_color=TEXT).pack(anchor="w", padx=24, pady=(20, 4))
-        ctk.CTkEntry(hk_card, textvariable=self._var_hotkey, font=F(14), fg_color=CONTROL_BG, border_color=BORDER, text_color=TEXT, height=40, corner_radius=8).pack(fill="x", padx=24, pady=(0, 24))
+        ctk.CTkLabel(hk_card, text="Dictation Shortcut", font=F(15, True), text_color=TEXT).pack(anchor="w", padx=24, pady=(20, 2))
+        ctk.CTkLabel(
+            hk_card,
+            text="Press once to start, speak, press again to stop. Text appears at your cursor.",
+            font=F(12),
+            text_color=TEXT_MUTED,
+            wraplength=450,
+            justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+
+        hk_row = ctk.CTkFrame(hk_card, fg_color="transparent")
+        hk_row.pack(fill="x", padx=24, pady=(0, 18))
+        hk_row.grid_columnconfigure(0, weight=1)
+
+        self._hotkey_dd_frame = ctk.CTkFrame(
+            hk_card,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER,
+            corner_radius=8,
+        )
+        self._hotkey_dd_open = False
+
+        def _toggle_hotkey():
+            if self._hotkey_dd_open:
+                self._hotkey_dd_frame.pack_forget()
+                self._hotkey_select_fr.configure(border_color=BORDER)
+                self._hotkey_select_arr.configure(text="▼")
+                self._hotkey_dd_open = False
+            else:
+                self._hotkey_dd_frame.pack(fill="x", padx=24, pady=(0, 24))
+                self._hotkey_select_fr.configure(border_color=BORDER_HOVER)
+                self._hotkey_select_arr.configure(text="▲")
+                self._hotkey_dd_open = True
+
+        def _select_hotkey(label):
+            self._var_hotkey.set(label)
+            self._hotkey_select_lbl.configure(text=label)
+            _toggle_hotkey()
+
+        self._hotkey_select_fr = ctk.CTkFrame(
+            hk_row,
+            height=40,
+            fg_color=CONTROL_BG,
+            border_width=1,
+            border_color=BORDER,
+            corner_radius=8,
+        )
+        self._hotkey_select_fr.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self._hotkey_select_fr.grid_columnconfigure(0, weight=1)
+        self._hotkey_select_fr.grid_propagate(False)
+
+        self._hotkey_select_lbl = ctk.CTkLabel(
+            self._hotkey_select_fr,
+            text=self._var_hotkey.get(),
+            font=F(14),
+            text_color=TEXT,
+            anchor="w",
+        )
+        self._hotkey_select_lbl.grid(row=0, column=0, sticky="ew", padx=(14, 8))
+
+        self._hotkey_select_arr = ctk.CTkLabel(
+            self._hotkey_select_fr,
+            text="▼",
+            font=F(12, True),
+            text_color=TEXT_MUTED,
+            width=28,
+        )
+        self._hotkey_select_arr.grid(row=0, column=1, sticky="e", padx=(0, 10))
+
+        def _hotkey_field_enter(_e=None):
+            if not self._hotkey_dd_open:
+                self._hotkey_select_fr.configure(border_color=BORDER_HOVER)
+
+        def _hotkey_field_leave(_e=None):
+            if not self._hotkey_dd_open:
+                self._hotkey_select_fr.configure(border_color=BORDER)
+
+        for widget in (self._hotkey_select_fr, self._hotkey_select_lbl, self._hotkey_select_arr):
+            widget.bind("<Button-1>", lambda _e: _toggle_hotkey())
+            widget.bind("<Enter>", _hotkey_field_enter)
+            widget.bind("<Leave>", _hotkey_field_leave)
+
+        ctk.CTkButton(
+            hk_row,
+            text="Save",
+            font=F(13, True),
+            width=86,
+            height=40,
+            corner_radius=8,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color="#FFFFFF",
+            command=self._save_dictation_hotkey,
+        ).grid(row=0, column=1)
+
+        for label, _value in DICTATION_HOTKEY_OPTIONS:
+            opt = ctk.CTkButton(
+                self._hotkey_dd_frame,
+                text=label,
+                font=F(13),
+                height=34,
+                fg_color="transparent",
+                text_color=TEXT,
+                hover_color=CARD_HOVER,
+                anchor="w",
+                corner_radius=6,
+                command=lambda val=label: _select_hotkey(val),
+            )
+            opt.pack(fill="x", padx=6, pady=(6 if label == DICTATION_HOTKEY_OPTIONS[0][0] else 0, 2))
 
         lang_card = self._settings_card(config_col)
         ctk.CTkLabel(lang_card, text="Spoken Language", font=F(15, True), text_color=TEXT).pack(anchor="w", padx=24, pady=(20, 4))
@@ -430,7 +612,22 @@ class MainWindow:
 
     def _dl_model(self, name):
         self._dling.add(name)
+        self._dl_start_times[name] = time.monotonic()
         self._update_model_action(name, False, False)
+
+        def _tick():
+            if name not in self._dling:
+                return
+            elapsed = int(time.monotonic() - self._dl_start_times.get(name, time.monotonic()))
+            af = self._model_refs.get(name)
+            if af:
+                for w in af.winfo_children():
+                    if isinstance(w, ctk.CTkLabel) and "Downloading" in w.cget("text"):
+                        w.configure(text=f"Downloading... {elapsed}s")
+            self.root.after(1000, _tick)
+
+        self.root.after(1000, _tick)
+
         def w():
             try:
                 import ctranslate2
@@ -447,6 +644,7 @@ class MainWindow:
 
     def _done_dl(self, name, ok):
         self._dling.discard(name)
+        self._dl_start_times.pop(name, None)
         self._pop_models()
 
     def _set_model(self, name):
@@ -520,3 +718,191 @@ class MainWindow:
         card = ctk.CTkFrame(parent, fg_color=CARD_BG, corner_radius=20, border_width=1, border_color=BORDER)
         card.pack(fill="x", pady=8)
         return card
+
+    # ── System Audio View ──────────────────────────────────────────────────
+    def _build_system_audio_view(self):
+        fr = ctk.CTkScrollableFrame(self.root, fg_color="transparent")
+        self.frames["system_audio"] = fr
+
+        header_fr = ctk.CTkFrame(fr, fg_color="transparent")
+        header_fr.pack(fill="x", pady=(0, 30))
+
+        title_fr = ctk.CTkFrame(header_fr, fg_color="transparent")
+        title_fr.pack(side="left")
+        ctk.CTkLabel(title_fr, text="System Audio", font=F(34, True), text_color=TEXT).pack(anchor="w")
+        ctk.CTkLabel(title_fr, text="Capture and transcribe audio playing on your system.", font=F(15), text_color=TEXT_MUTED).pack(anchor="w", pady=(4, 0))
+
+        # ── Status / Control Card ─────────────────────────────────────────
+        ctrl_card = ctk.CTkFrame(fr, fg_color=CARD_BG, corner_radius=20, border_width=1, border_color=BORDER)
+        ctrl_card.pack(fill="x", pady=(0, 20))
+
+        ctrl_inner = ctk.CTkFrame(ctrl_card, fg_color="transparent")
+        ctrl_inner.pack(fill="x", padx=30, pady=24)
+
+        left_fr = ctk.CTkFrame(ctrl_inner, fg_color="transparent")
+        left_fr.pack(side="left")
+
+        status_row = ctk.CTkFrame(left_fr, fg_color="transparent")
+        status_row.pack(anchor="w")
+
+        self._sys_status_dot = ctk.CTkLabel(status_row, text="●", font=F(16), text_color=TEXT_MUTED)
+        self._sys_status_dot.pack(side="left", padx=(0, 10))
+        self._sys_status_lbl = ctk.CTkLabel(status_row, text="Not Recording", font=F(18, True), text_color=TEXT)
+        self._sys_status_lbl.pack(side="left")
+
+        self._sys_timer_lbl = ctk.CTkLabel(left_fr, text="", font=F(14), text_color=TEXT_MUTED)
+        self._sys_timer_lbl.pack(anchor="w", pady=(4, 0))
+
+        shortcut_text = self.cfg.get("system_audio_hotkey", "right alt+/")
+        self._sys_shortcut_lbl = ctk.CTkLabel(left_fr, text=f"Shortcut: {shortcut_text}", font=F(13), text_color=TEXT_MUTED)
+        self._sys_shortcut_lbl.pack(anchor="w", pady=(4, 0))
+
+        self._sys_toggle_btn = ctk.CTkButton(
+            ctrl_inner, text="●  Start Capture", font=F(15, True),
+            width=180, height=46, corner_radius=12,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#FFFFFF",
+            command=self._ui_toggle_system_audio
+        )
+        self._sys_toggle_btn.pack(side="right")
+
+        # ── Hotkey Config Card ────────────────────────────────────────────
+        hk_card = ctk.CTkFrame(fr, fg_color=CARD_BG, corner_radius=20, border_width=1, border_color=BORDER)
+        hk_card.pack(fill="x", pady=(0, 20))
+        ctk.CTkLabel(hk_card, text="System Audio Hotkey", font=F(15, True), text_color=TEXT).pack(anchor="w", padx=24, pady=(20, 4))
+        ctk.CTkEntry(hk_card, textvariable=self._var_sys_hotkey, font=F(14), fg_color=CONTROL_BG, border_color=BORDER, text_color=TEXT, height=40, corner_radius=8).pack(fill="x", padx=24, pady=(0, 24))
+
+        # ── Transcripts Section ───────────────────────────────────────────
+        trans_header = ctk.CTkFrame(fr, fg_color="transparent")
+        trans_header.pack(fill="x", pady=(10, 10))
+        ctk.CTkLabel(trans_header, text="Transcriptions", font=F(18, True), text_color=TEXT).pack(side="left")
+
+        self._sys_clear_btn = ctk.CTkButton(
+            trans_header, text="Clear All", font=F(13, True), width=80, height=32, corner_radius=8,
+            fg_color="transparent", text_color=TEXT_MUTED, hover_color=BORDER,
+            border_width=1, border_color=BORDER,
+            command=self._clear_system_transcripts
+        )
+        self._sys_clear_btn.pack(side="right")
+
+        self._sys_transcript_container = ctk.CTkFrame(fr, fg_color=CARD_BG, corner_radius=20, border_width=1, border_color=BORDER)
+        self._sys_transcript_container.pack(fill="x", pady=8)
+        ctk.CTkLabel(self._sys_transcript_container, text="No system audio transcriptions yet.\nPress the hotkey or click Start Capture to begin.", font=F(14), text_color=TEXT_MUTED, justify="center").pack(pady=40)
+
+    def _ui_toggle_system_audio(self):
+        """Called by the UI Start/Stop button."""
+        self.app._toggle_system_audio()
+
+    def _on_system_status(self, state: str):
+        """Update system audio UI when state changes."""
+        try:
+            if state == "recording":
+                self._sys_status_dot.configure(text_color=RED)
+                self._sys_status_lbl.configure(text="Recording...")
+                self._sys_toggle_btn.configure(text="■  Stop Capture", fg_color=RED, hover_color="#B91C1C")
+                self._sys_recording_start = time.monotonic()
+                self._update_sys_timer()
+                self._do_sys_pulse(True)
+            elif state == "processing":
+                self._sys_status_dot.configure(text_color=ACCENT)
+                self._sys_status_lbl.configure(text="Transcribing...")
+                self._sys_toggle_btn.configure(text="Processing...", fg_color=TEXT_MUTED, hover_color=TEXT_MUTED)
+                self._stop_sys_timer()
+                self._stop_sys_pulse()
+            elif state == "error":
+                self._sys_status_dot.configure(text_color=RED)
+                self._sys_status_lbl.configure(text="Error — no audio device")
+                self._sys_toggle_btn.configure(text="●  Start Capture", fg_color=ACCENT, hover_color=ACCENT_HOVER)
+                self._stop_sys_timer()
+                self._stop_sys_pulse()
+                self._sys_timer_lbl.configure(text="")
+            else:  # idle
+                self._sys_status_dot.configure(text_color=TEXT_MUTED)
+                self._sys_status_lbl.configure(text="Not Recording")
+                self._sys_toggle_btn.configure(text="●  Start Capture", fg_color=ACCENT, hover_color=ACCENT_HOVER)
+                self._stop_sys_timer()
+                self._stop_sys_pulse()
+                self._sys_timer_lbl.configure(text="")
+        except Exception as e:
+            print(f"[ui] system status err: {e}")
+
+    def _update_sys_timer(self):
+        """Update the recording duration label every second."""
+        try:
+            elapsed = time.monotonic() - self._sys_recording_start
+            mins = int(elapsed) // 60
+            secs = int(elapsed) % 60
+            self._sys_timer_lbl.configure(text=f"Duration: {mins}m {secs:02d}s")
+            self._sys_timer_id = self.root.after(1000, self._update_sys_timer)
+        except Exception:
+            pass
+
+    def _stop_sys_timer(self):
+        if self._sys_timer_id:
+            try: self.root.after_cancel(self._sys_timer_id)
+            except: pass
+            self._sys_timer_id = None
+
+    def _do_sys_pulse(self, vis: bool):
+        try:
+            self._sys_status_dot.configure(text_color=RED if vis else TEXT_MUTED)
+            self._sys_pulse_id = self.root.after(500, lambda: self._do_sys_pulse(not vis))
+        except: pass
+
+    def _stop_sys_pulse(self):
+        if self._sys_pulse_id:
+            try: self.root.after_cancel(self._sys_pulse_id)
+            except: pass
+            self._sys_pulse_id = None
+
+    def _on_system_transcript(self, history: list):
+        """Populate the transcript list from system audio results."""
+        try:
+            for w in self._sys_transcript_container.winfo_children():
+                w.destroy()
+            if not history:
+                ctk.CTkLabel(self._sys_transcript_container, text="No system audio transcriptions yet.", font=F(14), text_color=TEXT_MUTED, justify="center").pack(pady=40)
+                return
+            for i, item in enumerate(history):
+                self._sys_transcript_item(self._sys_transcript_container, item)
+                if i < len(history) - 1:
+                    ctk.CTkFrame(self._sys_transcript_container, fg_color=BORDER, height=1).pack(fill="x", padx=24)
+        except Exception as e:
+            print(f"[ui] system transcript err: {e}")
+
+    def _sys_transcript_item(self, parent, item):
+        """Render a single system audio transcript entry."""
+        import pyperclip
+        fr = ctk.CTkFrame(parent, fg_color="transparent")
+        fr.pack(fill="x", padx=24, pady=16)
+
+        top_fr = ctk.CTkFrame(fr, fg_color="transparent")
+        top_fr.pack(fill="x")
+
+        t_str = time.strftime("%I:%M %p", time.localtime(item["time"]))
+        dur = item.get("duration", 0)
+        dur_str = f"{int(dur)}s" if dur < 60 else f"{int(dur)//60}m {int(dur)%60:02d}s"
+        words = len(item["text"].split())
+
+        ctk.CTkLabel(top_fr, text=t_str, font=F(12, True), text_color=ACCENT).pack(side="left")
+        ctk.CTkLabel(top_fr, text=f"{dur_str}  •  {words} words", font=F(12), text_color=TEXT_MUTED).pack(side="left", padx=10)
+
+        text = item["text"]
+        def _copy():
+            pyperclip.copy(text)
+
+        btn = ctk.CTkButton(top_fr, text="📋 Copy", font=F(11, True), width=50, height=24, corner_radius=6, fg_color="transparent", text_color=TEXT_MUTED, hover_color=BORDER, border_width=1, border_color=BORDER, command=_copy)
+        btn.pack(side="right")
+
+        display_text = text if len(text) < 500 else text[:500] + "..."
+        ctk.CTkLabel(fr, text=f'"{display_text}"', font=F(14), text_color=TEXT, justify="left", wraplength=500).pack(anchor="w", pady=(8, 0))
+
+    def _clear_system_transcripts(self):
+        """Clear all system audio transcripts."""
+        self.app._system_transcript_history = []
+        for w in self._sys_transcript_container.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(self._sys_transcript_container, text="No system audio transcriptions yet.\nPress the hotkey or click Start Capture to begin.", font=F(14), text_color=TEXT_MUTED, justify="center").pack(pady=40)
+
+    def _open_model_manager(self):
+        """Switch to Model Catalog view (called on first run if no models)."""
+        self.select_view("models")

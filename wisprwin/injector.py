@@ -2,19 +2,74 @@
 injector.py — Paste text into the currently focused window.
 
 Strategy:
-  1. Optionally save existing clipboard content
-  2. Copy transcribed text to clipboard
-  3. Send Ctrl+V to active window via pyautogui
-  4. Optionally restore original clipboard
+  1. Save existing clipboard (text only) via win32clipboard
+  2. Copy transcribed text to clipboard via win32clipboard
+  3. Wait for hotkey modifiers to release
+  4. Send Ctrl+V into the focused text field
+  5. Restore original clipboard
+
+win32clipboard is used directly to eliminate race conditions and
+settle-time uncertainty that come with pyperclip.
 """
 
 import time
-import pyperclip
+
+import keyboard
 import pyautogui
 
-# Give the OS a moment to settle between clipboard operations (seconds)
-_CLIPBOARD_SETTLE = 0.05
-_PASTE_SETTLE = 0.10
+try:
+    import win32clipboard
+    import win32con
+    _HAS_WIN32CLIP = True
+except ImportError:
+    _HAS_WIN32CLIP = False
+    import pyperclip
+
+_CLIPBOARD_SETTLE = 0.02
+_PASTE_SETTLE = 0.25
+
+pyautogui.PAUSE = 0
+
+
+def _get_clipboard_text() -> str:
+    """Return current clipboard text, or '' on failure."""
+    if not _HAS_WIN32CLIP:
+        try:
+            return pyperclip.paste() or ""
+        except Exception:
+            return ""
+    try:
+        win32clipboard.OpenClipboard()
+        try:
+            data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT) or ""
+        except TypeError:
+            data = ""
+        win32clipboard.CloseClipboard()
+        return data
+    except Exception:
+        try:
+            win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+        return ""
+
+
+def _set_clipboard_text(text: str) -> None:
+    """Set clipboard text synchronously."""
+    if not _HAS_WIN32CLIP:
+        pyperclip.copy(text)
+        return
+    try:
+        win32clipboard.OpenClipboard()
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        win32clipboard.CloseClipboard()
+    except Exception:
+        try:
+            win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+        raise
 
 
 def paste_text(text: str, restore_clipboard: bool = True) -> None:
@@ -31,43 +86,42 @@ def paste_text(text: str, restore_clipboard: bool = True) -> None:
     if not text:
         return
 
-    # --- 1. Save current clipboard ---
-    original = ""
-    if restore_clipboard:
-        try:
-            original = pyperclip.paste()
-        except Exception:
-            original = ""
+    original = _get_clipboard_text() if restore_clipboard else ""
 
-    # --- 2. Put our text on the clipboard ---
     try:
-        pyperclip.copy(text)
+        _set_clipboard_text(text)
     except Exception as e:
         print(f"[injector] Failed to copy to clipboard: {e}")
         return
 
     time.sleep(_CLIPBOARD_SETTLE)
 
-    # --- 3. Paste into active window ---
-    # Physical modifiers held down (like Right Alt) will break Ctrl+V.
-    # We wait briefly for the user to let go of them.
-    import keyboard
+    # Wait for physical modifiers held by the user to release so
+    # they don't interfere with Ctrl+V.
     timeout = time.time() + 2.0
     while time.time() < timeout:
-        if not keyboard.is_pressed("alt") and not keyboard.is_pressed("right alt") and not keyboard.is_pressed("shift"):
+        if (
+            not keyboard.is_pressed("alt")
+            and not keyboard.is_pressed("right alt")
+            and not keyboard.is_pressed("shift")
+            and not keyboard.is_pressed("ctrl")
+        ):
             break
-        time.sleep(0.05)
+        time.sleep(0.02)
 
     try:
-        keyboard.send("ctrl+v")
+        pyautogui.hotkey("ctrl", "v")
     except Exception as e:
-        print(f"[injector] Failed to send Ctrl+V: {e}")
+        print(f"[injector] pyautogui paste failed: {e}")
+        try:
+            keyboard.send("ctrl+v")
+        except Exception as inner:
+            print(f"[injector] keyboard paste failed: {inner}")
 
     time.sleep(_PASTE_SETTLE)
 
-    # --- 4. Restore original clipboard ---
-    if restore_clipboard and original:
+    if restore_clipboard:
         try:
-            pyperclip.copy(original)
+            _set_clipboard_text(original)
         except Exception:
-            pass  # non-critical — original was probably non-text
+            pass  # non-critical

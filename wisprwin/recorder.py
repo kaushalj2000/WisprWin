@@ -17,6 +17,11 @@ CHANNELS = 1           # Mono
 DTYPE = "float32"
 
 
+class AudioDeviceError(Exception):
+    """Raised when the default audio input device cannot be opened."""
+    pass
+
+
 class Recorder:
     """
     Thread-safe microphone recorder.
@@ -52,14 +57,20 @@ class Recorder:
         # device=None  →  always uses Windows default input (Sound Mapper)
         # A fresh stream is created every press so mid-session device
         # changes (e.g. plugging in a headset) are picked up automatically.
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            device=None,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+        try:
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                device=None,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+        except Exception as e:
+            self._recording = False
+            self._stream = None
+            raise AudioDeviceError(f"Could not open microphone: {e}") from e
+
         try:
             dev_info = sd.query_devices(self._stream.device, 'input')
             print(f"[recorder] Recording from: {dev_info['name']}")
