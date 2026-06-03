@@ -2,6 +2,8 @@
 
 <!-- banner -->
 
+![Alt text]([WisprWin Logo.png](https://github.com/kaushalj2000/WisprWin/blob/main/WisprWin%20Logo.png))
+
 **Offline voice dictation for Windows — hold a hotkey, speak, release, and your words appear wherever your cursor is.**
 
 No cloud. No account. No subscription. Just fast, private, local speech-to-text powered by OpenAI Whisper.
