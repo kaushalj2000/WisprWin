@@ -2,7 +2,7 @@
 
 <!-- banner -->
 
-![Alt text]([WisprWin Logo.png](https://github.com/kaushalj2000/WisprWin/blob/main/WisprWin%20Logo.png))
+![Alt text](WisprWin Logo.png))
 
 **Offline voice dictation for Windows — hold a hotkey, speak, release, and your words appear wherever your cursor is.**
 
